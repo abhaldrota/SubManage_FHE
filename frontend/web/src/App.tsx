@@ -5,22 +5,21 @@ import { getContractReadOnly, getContractWithSigner } from "./components/useCont
 import "./App.css";
 import { useAccount } from 'wagmi';
 import { useFhevm, useEncrypt, useDecrypt } from '../fhevm-sdk/src';
+import { ethers } from 'ethers';
 
 interface SubscriptionData {
   id: string;
   name: string;
-  amount: number;
-  frequency: string;
-  nextBilling: number;
-  merchant: string;
-  status: string;
   encryptedAmount: string;
   publicValue1: number;
   publicValue2: number;
-  isVerified?: boolean;
-  decryptedValue?: number;
-  timestamp: number;
+  description: string;
   creator: string;
+  timestamp: number;
+  isVerified: boolean;
+  decryptedValue: number;
+  category: string;
+  status: string;
 }
 
 const App: React.FC = () => {
@@ -32,30 +31,32 @@ const App: React.FC = () => {
   const [creatingSubscription, setCreatingSubscription] = useState(false);
   const [transactionStatus, setTransactionStatus] = useState<{ visible: boolean; status: "pending" | "success" | "error"; message: string; }>({ 
     visible: false, 
-    status: "pending", 
+    status: "pending" as const, 
     message: "" 
   });
   const [newSubscriptionData, setNewSubscriptionData] = useState({ 
     name: "", 
     amount: "", 
-    frequency: "monthly",
-    merchant: "" 
+    category: "streaming", 
+    description: "" 
   });
   const [selectedSubscription, setSelectedSubscription] = useState<SubscriptionData | null>(null);
   const [isDecrypting, setIsDecrypting] = useState(false);
   const [contractAddress, setContractAddress] = useState("");
   const [fhevmInitializing, setFhevmInitializing] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const [filterStatus, setFilterStatus] = useState("all");
-  const [stats, setStats] = useState({ total: 0, active: 0, monthly: 0 });
+  const [filterCategory, setFilterCategory] = useState("all");
+  const [userHistory, setUserHistory] = useState<any[]>([]);
+  const [showFAQ, setShowFAQ] = useState(false);
 
   const { status, initialize, isInitialized } = useFhevm();
-  const { encrypt, isEncrypting } = useEncrypt();
+  const { encrypt, isEncrypting} = useEncrypt();
   const { verifyDecryption, isDecrypting: fheIsDecrypting } = useDecrypt();
 
   useEffect(() => {
     const initFhevmAfterConnection = async () => {
-      if (!isConnected || isInitialized || fhevmInitializing) return;
+      if (!isConnected) return;
+      if (isInitialized || fhevmInitializing) return;
       
       try {
         setFhevmInitializing(true);
@@ -113,18 +114,17 @@ const App: React.FC = () => {
           subscriptionsList.push({
             id: businessId,
             name: businessData.name,
-            amount: 0,
-            frequency: "monthly",
-            nextBilling: Number(businessData.timestamp) + 30 * 24 * 60 * 60,
-            merchant: businessData.description,
-            status: "active",
-            encryptedAmount: "",
+            encryptedAmount: businessId,
             publicValue1: Number(businessData.publicValue1) || 0,
             publicValue2: Number(businessData.publicValue2) || 0,
+            description: businessData.description,
+            creator: businessData.creator,
+            timestamp: Number(businessData.timestamp),
             isVerified: businessData.isVerified,
             decryptedValue: Number(businessData.decryptedValue) || 0,
-            timestamp: Number(businessData.timestamp),
-            creator: businessData.creator
+            category: Number(businessData.publicValue2) === 1 ? "streaming" : 
+                     Number(businessData.publicValue2) === 2 ? "software" : "other",
+            status: Number(businessData.publicValue1) === 1 ? "active" : "inactive"
           });
         } catch (e) {
           console.error('Error loading business data:', e);
@@ -132,21 +132,12 @@ const App: React.FC = () => {
       }
       
       setSubscriptions(subscriptionsList);
-      updateStats(subscriptionsList);
     } catch (e) {
       setTransactionStatus({ visible: true, status: "error", message: "Failed to load data" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     } finally { 
       setIsRefreshing(false); 
     }
-  };
-
-  const updateStats = (subs: SubscriptionData[]) => {
-    setStats({
-      total: subs.length,
-      active: subs.filter(s => s.status === "active").length,
-      monthly: subs.reduce((sum, s) => sum + (s.publicValue1 || 0), 0)
-    });
   };
 
   const createSubscription = async () => {
@@ -165,6 +156,8 @@ const App: React.FC = () => {
       
       const amountValue = parseInt(newSubscriptionData.amount) || 0;
       const businessId = `sub-${Date.now()}`;
+      const categoryValue = newSubscriptionData.category === "streaming" ? 1 : 
+                           newSubscriptionData.category === "software" ? 2 : 3;
       
       const encryptedResult = await encrypt(contractAddress, address, amountValue);
       
@@ -173,26 +166,33 @@ const App: React.FC = () => {
         newSubscriptionData.name,
         encryptedResult.encryptedData,
         encryptedResult.proof,
-        amountValue,
-        0,
-        newSubscriptionData.merchant
+        1,
+        categoryValue,
+        newSubscriptionData.description
       );
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Waiting for transaction confirmation..." });
+      setTransactionStatus({ visible: true, status: "pending", message: "Encrypting subscription data..." });
       await tx.wait();
       
-      setTransactionStatus({ visible: true, status: "success", message: "Subscription created successfully!" });
+      setUserHistory(prev => [...prev, {
+        type: "create",
+        id: businessId,
+        name: newSubscriptionData.name,
+        timestamp: Date.now()
+      }]);
+      
+      setTransactionStatus({ visible: true, status: "success", message: "Subscription created with FHE protection!" });
       setTimeout(() => {
         setTransactionStatus({ visible: false, status: "pending", message: "" });
       }, 2000);
       
       await loadData();
       setShowCreateModal(false);
-      setNewSubscriptionData({ name: "", amount: "", frequency: "monthly", merchant: "" });
+      setNewSubscriptionData({ name: "", amount: "", category: "streaming", description: "" });
     } catch (e: any) {
       const errorMessage = e.message?.includes("user rejected transaction") 
-        ? "Transaction rejected by user" 
-        : "Submission failed: " + (e.message || "Unknown error");
+        ? "Transaction rejected" 
+        : "Creation failed: " + (e.message || "Unknown error");
       setTransactionStatus({ visible: true, status: "error", message: errorMessage });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     } finally { 
@@ -215,7 +215,7 @@ const App: React.FC = () => {
       const businessData = await contractRead.getBusinessData(businessId);
       if (businessData.isVerified) {
         const storedValue = Number(businessData.decryptedValue) || 0;
-        setTransactionStatus({ visible: true, status: "success", message: "Data already verified on-chain" });
+        setTransactionStatus({ visible: true, status: "success", message: "Data verified on-chain" });
         setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
         return storedValue;
       }
@@ -232,28 +232,30 @@ const App: React.FC = () => {
           contractWrite.verifyDecryption(businessId, abiEncodedClearValues, decryptionProof)
       );
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Verifying decryption on-chain..." });
-      
+      setTransactionStatus({ visible: true, status: "pending", message: "Verifying FHE decryption..." });
       const clearValue = result.decryptionResult.clearValues[encryptedValueHandle];
       
+      setUserHistory(prev => [...prev, {
+        type: "decrypt",
+        id: businessId,
+        value: Number(clearValue),
+        timestamp: Date.now()
+      }]);
+      
       await loadData();
-      
-      setTransactionStatus({ visible: true, status: "success", message: "Amount decrypted and verified successfully!" });
-      setTimeout(() => {
-        setTransactionStatus({ visible: false, status: "pending", message: "" });
-      }, 2000);
-      
+      setTransactionStatus({ visible: true, status: "success", message: "Data decrypted with FHE!" });
+      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
       return Number(clearValue);
       
     } catch (e: any) { 
       if (e.message?.includes("Data already verified")) {
-        setTransactionStatus({ visible: true, status: "success", message: "Data is already verified on-chain" });
+        setTransactionStatus({ visible: true, status: "success", message: "Data already verified" });
         setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
         await loadData();
         return null;
       }
       
-      setTransactionStatus({ visible: true, status: "error", message: "Decryption failed: " + (e.message || "Unknown error") });
+      setTransactionStatus({ visible: true, status: "error", message: "Decryption failed" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
       return null; 
     } finally { 
@@ -266,8 +268,8 @@ const App: React.FC = () => {
       const contract = await getContractReadOnly();
       if (!contract) return;
       
-      const available = await contract.isAvailable();
-      setTransactionStatus({ visible: true, status: "success", message: "Contract is available and ready!" });
+      const isAvailable = await contract.isAvailable();
+      setTransactionStatus({ visible: true, status: "success", message: "FHE system is available!" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
     } catch (e) {
       setTransactionStatus({ visible: true, status: "error", message: "Availability check failed" });
@@ -277,70 +279,16 @@ const App: React.FC = () => {
 
   const filteredSubscriptions = subscriptions.filter(sub => {
     const matchesSearch = sub.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         sub.merchant.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = filterStatus === "all" || sub.status === filterStatus;
-    return matchesSearch && matchesStatus;
+                         sub.description.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesCategory = filterCategory === "all" || sub.category === filterCategory;
+    return matchesSearch && matchesCategory;
   });
 
-  const renderStats = () => {
-    return (
-      <div className="stats-grid">
-        <div className="stat-card">
-          <div className="stat-icon">📊</div>
-          <div className="stat-content">
-            <div className="stat-value">{stats.total}</div>
-            <div className="stat-label">Total Subscriptions</div>
-          </div>
-        </div>
-        
-        <div className="stat-card">
-          <div className="stat-icon">✅</div>
-          <div className="stat-content">
-            <div className="stat-value">{stats.active}</div>
-            <div className="stat-label">Active</div>
-          </div>
-        </div>
-        
-        <div className="stat-card">
-          <div className="stat-icon">💰</div>
-          <div className="stat-content">
-            <div className="stat-value">${stats.monthly}</div>
-            <div className="stat-label">Monthly Total</div>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderFHEInfo = () => {
-    return (
-      <div className="fhe-info-panel">
-        <h3>🔐 FHE Privacy Protection</h3>
-        <div className="fhe-steps">
-          <div className="fhe-step">
-            <div className="step-number">1</div>
-            <div className="step-content">
-              <strong>Encrypted Storage</strong>
-              <p>Subscription amounts are FHE-encrypted on-chain</p>
-            </div>
-          </div>
-          <div className="fhe-step">
-            <div className="step-number">2</div>
-            <div className="step-content">
-              <strong>Private Computation</strong>
-              <p>Renewal logic processed without revealing amounts</p>
-            </div>
-          </div>
-          <div className="fhe-step">
-            <div className="step-number">3</div>
-            <div className="step-content">
-              <strong>Selective Disclosure</strong>
-              <p>Only you can decrypt and verify payment data</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+  const stats = {
+    total: subscriptions.length,
+    active: subscriptions.filter(s => s.status === "active").length,
+    verified: subscriptions.filter(s => s.isVerified).length,
+    totalAmount: subscriptions.reduce((sum, sub) => sum + (sub.isVerified ? sub.decryptedValue : 0), 0)
   };
 
   if (!isConnected) {
@@ -348,8 +296,7 @@ const App: React.FC = () => {
       <div className="app-container">
         <header className="app-header">
           <div className="logo">
-            <h1>FHE Subscriptions 🔐</h1>
-            <p>Privacy-First Subscription Management</p>
+            <h1>FHE订阅管理 🔐</h1>
           </div>
           <div className="header-actions">
             <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
@@ -359,22 +306,8 @@ const App: React.FC = () => {
         <div className="connection-prompt">
           <div className="connection-content">
             <div className="connection-icon">🔐</div>
-            <h2>Connect Your Wallet to Start</h2>
-            <p>Manage your subscriptions with full privacy using FHE encryption</p>
-            <div className="connection-features">
-              <div className="feature">
-                <span>🔒</span>
-                <p>Encrypted payment amounts</p>
-              </div>
-              <div className="feature">
-                <span>👁️</span>
-                <p>Merchants see only what's necessary</p>
-              </div>
-              <div className="feature">
-                <span>⚡</span>
-                <p>Private automated renewals</p>
-              </div>
-            </div>
+            <h2>连接钱包开始使用</h2>
+            <p>连接您的钱包来初始化FHE加密订阅管理系统</p>
           </div>
         </div>
       </div>
@@ -385,8 +318,7 @@ const App: React.FC = () => {
     return (
       <div className="loading-screen">
         <div className="fhe-spinner"></div>
-        <p>Initializing FHE Encryption System...</p>
-        <p className="loading-note">Securing your subscription data</p>
+        <p>初始化FHE加密系统...</p>
       </div>
     );
   }
@@ -394,7 +326,7 @@ const App: React.FC = () => {
   if (loading) return (
     <div className="loading-screen">
       <div className="fhe-spinner"></div>
-      <p>Loading encrypted subscriptions...</p>
+      <p>加载加密订阅数据...</p>
     </div>
   );
 
@@ -402,136 +334,134 @@ const App: React.FC = () => {
     <div className="app-container">
       <header className="app-header">
         <div className="logo">
-          <h1>FHE Subscriptions 🔐</h1>
-          <p>Privacy-First Subscription Management</p>
+          <h1>FHE订阅管理 🔐</h1>
         </div>
         
         <div className="header-actions">
-          <button onClick={checkAvailability} className="check-btn">
-            Check Availability
-          </button>
-          <button onClick={() => setShowCreateModal(true)} className="create-btn">
-            + Add Subscription
-          </button>
+          <button onClick={checkAvailability} className="status-btn">检查系统状态</button>
+          <button onClick={() => setShowFAQ(true)} className="faq-btn">常见问题</button>
+          <button onClick={() => setShowCreateModal(true)} className="create-btn">+ 新增订阅</button>
           <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
         </div>
       </header>
       
       <div className="main-content">
+        <div className="stats-grid">
+          <div className="stat-card">
+            <div className="stat-value">{stats.total}</div>
+            <div className="stat-label">总订阅数</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-value">{stats.active}</div>
+            <div className="stat-label">活跃订阅</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-value">{stats.verified}</div>
+            <div className="stat-label">已验证</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-value">${stats.totalAmount}</div>
+            <div className="stat-label">总金额</div>
+          </div>
+        </div>
+
         <div className="controls-section">
           <div className="search-filter">
-            <input
-              type="text"
-              placeholder="Search subscriptions..."
+            <input 
+              type="text" 
+              placeholder="搜索订阅..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="search-input"
             />
             <select 
-              value={filterStatus} 
-              onChange={(e) => setFilterStatus(e.target.value)}
+              value={filterCategory} 
+              onChange={(e) => setFilterCategory(e.target.value)}
               className="filter-select"
             >
-              <option value="all">All Status</option>
-              <option value="active">Active</option>
-              <option value="paused">Paused</option>
-              <option value="cancelled">Cancelled</option>
+              <option value="all">所有分类</option>
+              <option value="streaming">流媒体</option>
+              <option value="software">软件</option>
+              <option value="other">其他</option>
             </select>
-            <button onClick={loadData} disabled={isRefreshing} className="refresh-btn">
-              {isRefreshing ? "Refreshing..." : "Refresh"}
+            <button onClick={loadData} className="refresh-btn">
+              {isRefreshing ? "刷新中..." : "刷新数据"}
             </button>
           </div>
         </div>
 
-        {renderStats()}
-        {renderFHEInfo()}
-
-        <div className="subscriptions-section">
-          <h2>Your Subscriptions</h2>
-          
-          <div className="subscriptions-list">
-            {filteredSubscriptions.length === 0 ? (
-              <div className="no-subscriptions">
-                <p>No subscriptions found</p>
-                <button onClick={() => setShowCreateModal(true)} className="create-btn">
-                  Add Your First Subscription
-                </button>
-              </div>
-            ) : (
-              filteredSubscriptions.map((sub, index) => (
-                <div 
-                  className={`subscription-card ${sub.status} ${selectedSubscription?.id === sub.id ? "selected" : ""}`}
-                  key={index}
-                  onClick={() => setSelectedSubscription(sub)}
-                >
-                  <div className="card-header">
-                    <div className="service-name">{sub.name}</div>
-                    <div className={`status-badge ${sub.status}`}>{sub.status}</div>
-                  </div>
-                  
-                  <div className="card-content">
-                    <div className="merchant-info">
-                      <span className="merchant">{sub.merchant}</span>
-                      <span className="frequency">{sub.frequency}</span>
-                    </div>
-                    
-                    <div className="amount-info">
-                      {sub.isVerified && sub.decryptedValue ? (
-                        <div className="decrypted-amount">
-                          ${sub.decryptedValue} (Verified)
-                        </div>
-                      ) : (
-                        <div className="encrypted-amount">
-                          🔒 FHE Encrypted
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div className="billing-info">
-                      Next billing: {new Date(sub.nextBilling * 1000).toLocaleDateString()}
-                    </div>
-                  </div>
-                  
-                  <div className="card-footer">
-                    <div className="creator">
-                      Created by: {sub.creator.substring(0, 6)}...{sub.creator.substring(38)}
-                    </div>
-                    <button 
-                      className={`verify-btn ${sub.isVerified ? 'verified' : ''}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        decryptData(sub.id);
-                      }}
-                      disabled={isDecrypting}
-                    >
-                      {sub.isVerified ? '✅ Verified' : '🔓 Verify Amount'}
-                    </button>
-                  </div>
+        <div className="subscriptions-grid">
+          {filteredSubscriptions.length === 0 ? (
+            <div className="no-subscriptions">
+              <p>未找到订阅</p>
+              <button onClick={() => setShowCreateModal(true)} className="create-btn">
+                创建第一个订阅
+              </button>
+            </div>
+          ) : (
+            filteredSubscriptions.map((sub, index) => (
+              <div 
+                className={`subscription-card ${sub.isVerified ? 'verified' : ''}`}
+                key={index}
+                onClick={() => setSelectedSubscription(sub)}
+              >
+                <div className="card-header">
+                  <h3>{sub.name}</h3>
+                  <span className={`status-badge ${sub.status}`}>{sub.status}</span>
                 </div>
-              ))
-            )}
+                <div className="card-category">{sub.category}</div>
+                <div className="card-description">{sub.description}</div>
+                <div className="card-footer">
+                  <div className="encryption-status">
+                    {sub.isVerified ? (
+                      <span className="verified-badge">✅ 已验证: ${sub.decryptedValue}</span>
+                    ) : (
+                      <span className="encrypted-badge">🔒 FHE加密中</span>
+                    )}
+                  </div>
+                  <div className="card-date">{new Date(sub.timestamp * 1000).toLocaleDateString()}</div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="history-section">
+          <h3>操作历史</h3>
+          <div className="history-list">
+            {userHistory.slice(-5).map((item, index) => (
+              <div key={index} className="history-item">
+                <span className="history-type">{item.type === 'create' ? '创建' : '解密'}</span>
+                <span className="history-desc">{item.name || `值: ${item.value}`}</span>
+                <span className="history-time">{new Date(item.timestamp).toLocaleTimeString()}</span>
+              </div>
+            ))}
           </div>
         </div>
       </div>
 
       {showCreateModal && (
-        <ModalCreateSubscription 
-          onSubmit={createSubscription}
-          onClose={() => setShowCreateModal(false)}
-          creating={creatingSubscription}
-          subscriptionData={newSubscriptionData}
+        <CreateSubscriptionModal 
+          onSubmit={createSubscription} 
+          onClose={() => setShowCreateModal(false)} 
+          creating={creatingSubscription} 
+          subscriptionData={newSubscriptionData} 
           setSubscriptionData={setNewSubscriptionData}
           isEncrypting={isEncrypting}
         />
       )}
 
       {selectedSubscription && (
-        <SubscriptionDetailModal
-          subscription={selectedSubscription}
-          onClose={() => setSelectedSubscription(null)}
-          isDecrypting={isDecrypting || fheIsDecrypting}
+        <SubscriptionDetailModal 
+          subscription={selectedSubscription} 
+          onClose={() => setSelectedSubscription(null)} 
+          isDecrypting={isDecrypting || fheIsDecrypting} 
           decryptData={() => decryptData(selectedSubscription.id)}
         />
+      )}
+
+      {showFAQ && (
+        <FAQModal onClose={() => setShowFAQ(false)} />
       )}
 
       {transactionStatus.visible && (
@@ -550,15 +480,15 @@ const App: React.FC = () => {
   );
 };
 
-const ModalCreateSubscription: React.FC<{
-  onSubmit: () => void;
-  onClose: () => void;
+const CreateSubscriptionModal: React.FC<{
+  onSubmit: () => void; 
+  onClose: () => void; 
   creating: boolean;
   subscriptionData: any;
   setSubscriptionData: (data: any) => void;
   isEncrypting: boolean;
 }> = ({ onSubmit, onClose, creating, subscriptionData, setSubscriptionData, isEncrypting }) => {
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     if (name === 'amount') {
       const intValue = value.replace(/[^\d]/g, '');
@@ -570,72 +500,72 @@ const ModalCreateSubscription: React.FC<{
 
   return (
     <div className="modal-overlay">
-      <div className="create-subscription-modal">
+      <div className="create-modal">
         <div className="modal-header">
-          <h2>Add New Subscription</h2>
+          <h2>新增加密订阅</h2>
           <button onClick={onClose} className="close-modal">&times;</button>
         </div>
         
         <div className="modal-body">
           <div className="fhe-notice">
-            <strong>FHE 🔐 Protection</strong>
-            <p>Payment amount will be encrypted using Zama FHE technology</p>
+            <strong>FHE全同态加密保护</strong>
+            <p>订阅金额将使用Zama FHE进行加密处理，保护您的财务隐私</p>
           </div>
           
           <div className="form-group">
-            <label>Service Name *</label>
+            <label>订阅名称 *</label>
             <input 
-              type="text"
-              name="name"
-              value={subscriptionData.name}
-              onChange={handleChange}
-              placeholder="Netflix, Spotify, etc."
+              type="text" 
+              name="name" 
+              value={subscriptionData.name} 
+              onChange={handleChange} 
+              placeholder="输入订阅服务名称" 
             />
           </div>
           
           <div className="form-group">
-            <label>Monthly Amount (USD) *</label>
+            <label>月费金额 (整数) *</label>
             <input 
-              type="number"
-              name="amount"
-              value={subscriptionData.amount}
-              onChange={handleChange}
-              placeholder="Enter amount"
+              type="number" 
+              name="amount" 
+              value={subscriptionData.amount} 
+              onChange={handleChange} 
+              placeholder="输入月费金额" 
+              step="1"
               min="0"
             />
-            <div className="data-type-label">FHE Encrypted Integer</div>
+            <div className="data-type-label">FHE加密整数</div>
           </div>
           
           <div className="form-group">
-            <label>Billing Frequency</label>
-            <select name="frequency" value={subscriptionData.frequency} onChange={handleChange}>
-              <option value="monthly">Monthly</option>
-              <option value="yearly">Yearly</option>
-              <option value="weekly">Weekly</option>
+            <label>分类 *</label>
+            <select name="category" value={subscriptionData.category} onChange={handleChange}>
+              <option value="streaming">流媒体</option>
+              <option value="software">软件服务</option>
+              <option value="other">其他</option>
             </select>
           </div>
           
           <div className="form-group">
-            <label>Merchant Name *</label>
-            <input 
-              type="text"
-              name="merchant"
-              value={subscriptionData.merchant}
-              onChange={handleChange}
-              placeholder="Company name"
+            <label>描述</label>
+            <textarea 
+              name="description" 
+              value={subscriptionData.description} 
+              onChange={handleChange} 
+              placeholder="订阅描述..."
+              rows={3}
             />
-            <div className="data-type-label">Public Data</div>
           </div>
         </div>
         
         <div className="modal-footer">
-          <button onClick={onClose} className="cancel-btn">Cancel</button>
+          <button onClick={onClose} className="cancel-btn">取消</button>
           <button 
-            onClick={onSubmit}
-            disabled={creating || isEncrypting || !subscriptionData.name || !subscriptionData.amount || !subscriptionData.merchant}
+            onClick={onSubmit} 
+            disabled={creating || isEncrypting || !subscriptionData.name || !subscriptionData.amount} 
             className="submit-btn"
           >
-            {creating || isEncrypting ? "Encrypting..." : "Create Subscription"}
+            {creating || isEncrypting ? "FHE加密中..." : "创建加密订阅"}
           </button>
         </div>
       </div>
@@ -649,73 +579,125 @@ const SubscriptionDetailModal: React.FC<{
   isDecrypting: boolean;
   decryptData: () => Promise<number | null>;
 }> = ({ subscription, onClose, isDecrypting, decryptData }) => {
+
   return (
     <div className="modal-overlay">
-      <div className="subscription-detail-modal">
+      <div className="detail-modal">
         <div className="modal-header">
-          <h2>Subscription Details</h2>
+          <h2>订阅详情</h2>
           <button onClick={onClose} className="close-modal">&times;</button>
         </div>
         
         <div className="modal-body">
-          <div className="detail-grid">
-            <div className="detail-item">
-              <label>Service Name</label>
-              <span>{subscription.name}</span>
+          <div className="subscription-info">
+            <div className="info-row">
+              <span>服务名称:</span>
+              <strong>{subscription.name}</strong>
             </div>
-            
-            <div className="detail-item">
-              <label>Merchant</label>
-              <span>{subscription.merchant}</span>
+            <div className="info-row">
+              <span>分类:</span>
+              <strong>{subscription.category}</strong>
             </div>
-            
-            <div className="detail-item">
-              <label>Billing Frequency</label>
-              <span>{subscription.frequency}</span>
+            <div className="info-row">
+              <span>状态:</span>
+              <strong className={`status-${subscription.status}`}>{subscription.status}</strong>
             </div>
-            
-            <div className="detail-item">
-              <label>Next Billing Date</label>
-              <span>{new Date(subscription.nextBilling * 1000).toLocaleDateString()}</span>
+            <div className="info-row">
+              <span>创建者:</span>
+              <strong>{subscription.creator.substring(0, 8)}...{subscription.creator.substring(34)}</strong>
             </div>
-            
-            <div className="detail-item">
-              <label>Status</label>
-              <span className={`status ${subscription.status}`}>{subscription.status}</span>
+            <div className="info-row">
+              <span>创建时间:</span>
+              <strong>{new Date(subscription.timestamp * 1000).toLocaleString()}</strong>
             </div>
-            
-            <div className="detail-item amount-item">
-              <label>Payment Amount</label>
-              <div className="amount-display">
-                {subscription.isVerified && subscription.decryptedValue ? (
-                  <span className="decrypted-amount">${subscription.decryptedValue}</span>
-                ) : (
-                  <span className="encrypted-amount">🔒 Encrypted</span>
-                )}
-                <button 
-                  className={`verify-btn ${subscription.isVerified ? 'verified' : ''}`}
-                  onClick={decryptData}
-                  disabled={isDecrypting}
-                >
-                  {isDecrypting ? "Verifying..." : subscription.isVerified ? "Verified" : "Verify Amount"}
-                </button>
-              </div>
+            <div className="info-row">
+              <span>描述:</span>
+              <strong>{subscription.description}</strong>
             </div>
           </div>
           
-          <div className="fhe-explanation">
-            <h3>🔐 FHE Privacy Features</h3>
-            <p>Your payment amount is encrypted on-chain using Fully Homomorphic Encryption.</p>
-            <ul>
-              <li>Merchants cannot see your other subscription amounts</li>
-              <li>Renewal calculations happen without decrypting data</li>
-              <li>Only you can verify and view the actual amount</li>
-            </ul>
+          <div className="encryption-section">
+            <h3>FHE加密数据</h3>
+            <div className="data-row">
+              <div className="data-label">月费金额:</div>
+              <div className="data-value">
+                {subscription.isVerified ? 
+                  `$${subscription.decryptedValue} (链上已验证)` : 
+                  "🔒 FHE加密中"
+                }
+              </div>
+              <button 
+                className={`decrypt-btn ${subscription.isVerified ? 'verified' : ''}`}
+                onClick={decryptData} 
+                disabled={isDecrypting}
+              >
+                {isDecrypting ? "解密中..." : 
+                 subscription.isVerified ? "✅ 已验证" : "🔓 验证解密"}
+              </button>
+            </div>
+            
+            <div className="fhe-explanation">
+              <h4>FHE保护流程</h4>
+              <div className="flow-steps">
+                <div className="flow-step">
+                  <div className="step-number">1</div>
+                  <div className="step-content">客户端加密金额数据</div>
+                </div>
+                <div className="flow-step">
+                  <div className="step-number">2</div>
+                  <div className="step-content">加密数据存储到链上</div>
+                </div>
+                <div className="flow-step">
+                  <div className="step-number">3</div>
+                  <div className="step-content">需要时进行离线解密验证</div>
+                </div>
+                <div className="flow-step">
+                  <div className="step-number">4</div>
+                  <div className="step-content">提交证明完成链上验证</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         
         <div className="modal-footer">
-          <button onClick={onClose} className="close-btn">Close</button>
+          <button onClick={onClose} className="close-btn">关闭</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const FAQModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const faqs = [
+    {
+      question: "什么是FHE全同态加密？",
+      answer: "FHE允许在加密数据上直接进行计算，无需解密，保护您的订阅数据隐私。"
+    },
+    {
+      question: "为什么需要加密订阅数据？",
+      answer: "防止服务商获取您的完整消费习惯，保护财务隐私。"
+    },
+    {
+      question: "解密过程安全吗？",
+      answer: "解密在本地进行，只有验证证明会上链，确保安全性。"
+    }
+  ];
+
+  return (
+    <div className="modal-overlay">
+      <div className="faq-modal">
+        <div className="modal-header">
+          <h2>常见问题</h2>
+          <button onClick={onClose} className="close-modal">&times;</button>
+        </div>
+        <div className="modal-body">
+          {faqs.map((faq, index) => (
+            <div key={index} className="faq-item">
+              <h3>{faq.question}</h3>
+              <p>{faq.answer}</p>
+            </div>
+          ))}
         </div>
       </div>
     </div>
